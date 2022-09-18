@@ -72,7 +72,7 @@
 #include "tf2/LinearMath/Quaternion.h"
 #include "tf2/LinearMath/Transform.h"
 #include "tf2/LinearMath/Vector3.h"
-#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
+#include "tf2_geometry_msgs/tf2_geometry_msgs.h"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_broadcaster.h"
 #include "tf2_ros/transform_listener.h"
@@ -2286,9 +2286,9 @@ void RosFilter<T>::setPoseCallback(
   RF_DEBUG(
     "------ RosFilter<T>::setPoseCallback ------\nPose message:\n" << msg);
 
-  RCLCPP_INFO_STREAM(
-    get_logger(),
-    "Received set_pose request with value\n" << geometry_msgs::msg::to_yaml(*msg));
+  //RCLCPP_INFO_STREAM(
+  //  get_logger(),
+  //  "Received set_pose request with value\n" << geometry_msgs::msg::to_yaml(*msg));
 
   std::string topic_name("set_pose");
 
