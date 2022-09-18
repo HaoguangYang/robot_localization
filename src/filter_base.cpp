@@ -30,25 +30,29 @@
  * ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
  */
-
-#include <robot_localization/filter_base.hpp>
-#include <robot_localization/filter_common.hpp>
-#include <robot_localization/filter_utilities.hpp>
+#include "robot_localization/filter_base.hpp"
 
 #include <iomanip>
-#include <iostream>
 #include <limits>
+#include <algorithm>
+#include <iostream>
 #include <sstream>
 #include <vector>
-#include <algorithm>
+
+#include "angles/angles.h"
+#include "Eigen/Dense"
+#include "rclcpp/time.hpp"
+#include "robot_localization/filter_common.hpp"
+#include "robot_localization/filter_utilities.hpp"
+#include "robot_localization/measurement.hpp"
 
 namespace robot_localization
 {
 FilterBase::FilterBase()
 : initialized_(false), use_control_(false),
-  use_dynamic_process_noise_covariance_(false), control_timeout_(0),
+  use_dynamic_process_noise_covariance_(false), control_timeout_(0, 0u),
   last_measurement_time_(0, 0, RCL_ROS_TIME), latest_control_time_(0, 0, RCL_ROS_TIME),
-  sensor_timeout_(0), debug_stream_(nullptr),
+  sensor_timeout_(0, 0u), debug_stream_(nullptr),
   acceleration_gains_(TWIST_SIZE, 0.0),
   acceleration_limits_(TWIST_SIZE, 0.0),
   deceleration_gains_(TWIST_SIZE, 0.0),
@@ -99,7 +103,7 @@ void FilterBase::reset()
   covariance_epsilon_ *= 0.001;
 
   // Assume 30Hz from sensor data (configurable)
-  sensor_timeout_ = rclcpp::Duration(0.033333333);
+  sensor_timeout_ = rclcpp::Duration::from_seconds(0.033333333);
 
   // Initialize our last update and measurement times
   last_measurement_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
@@ -197,7 +201,7 @@ void FilterBase::processMeasurement(const Measurement & measurement)
     "------ FilterBase::processMeasurement (" << measurement.topic_name_ <<
       ") ------\n");
 
-  rclcpp::Duration delta(0);
+  rclcpp::Duration delta(0, 0u);
 
   // If we've had a previous reading, then go through the predict/update
   // cycle. Otherwise, set our state and covariance to whatever we get
@@ -215,7 +219,7 @@ void FilterBase::processMeasurement(const Measurement & measurement)
 
     // Only want to carry out a prediction if it's
     // forward in time. Otherwise, just correct.
-    if (delta > rclcpp::Duration(0)) {
+    if (delta > rclcpp::Duration(0, 0u)) {
       validateDelta(delta);
       predict(measurement.time_, delta);
 
@@ -247,7 +251,7 @@ void FilterBase::processMeasurement(const Measurement & measurement)
     initialized_ = true;
   }
 
-  if (delta >= rclcpp::Duration(0)) {
+  if (delta >= rclcpp::Duration(0, 0u)) {
     // Update the last measurement and update time.
     // The measurement time is based on the time stamp of the
     // measurement, whereas the update time is based on this
@@ -337,15 +341,15 @@ void FilterBase::setState(const Eigen::VectorXd & state) {state_ = state;}
 void FilterBase::validateDelta(rclcpp::Duration & /*delta*/)
 {
   // TODO(someone): Need to verify this condition B'Coz
-  // rclcpp::Duration(100000.0) value is 0.00010000000000000000479
+  // rclcpp::Duration::from_seconds(100000.0) value is 0.00010000000000000000479
   // This handles issues with ROS time when use_sim_time is on and we're playing
   // from bags.
-  /* if (delta > rclcpp::Duration(100000.0))
+  /* if (delta > rclcpp::Duration::from_seconds(100000.0))
   {
     FB_DEBUG("Delta was very large. Suspect playing from bag file. Setting to
   0.01\n");
 
-    delta = rclcpp::Duration(0.01);
+    delta = rclcpp::Duration::from_seconds(0.01);
   } */
 }
 
@@ -420,12 +424,9 @@ inline double FilterBase::computeControlAcceleration(
 
 void FilterBase::wrapStateAngles()
 {
-  state_(StateMemberRoll) =
-    filter_utilities::clampRotation(state_(StateMemberRoll));
-  state_(StateMemberPitch) =
-    filter_utilities::clampRotation(state_(StateMemberPitch));
-  state_(StateMemberYaw) =
-    filter_utilities::clampRotation(state_(StateMemberYaw));
+  state_(StateMemberRoll) = angles::normalize_angle(state_(StateMemberRoll));
+  state_(StateMemberPitch) = angles::normalize_angle(state_(StateMemberPitch));
+  state_(StateMemberYaw) = angles::normalize_angle(state_(StateMemberYaw));
 }
 
 bool FilterBase::checkMahalanobisThreshold(

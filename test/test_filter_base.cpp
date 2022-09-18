@@ -29,17 +29,15 @@
  * ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
  */
-
-#include <gtest/gtest.h>
-#include <Eigen/Dense>
-
 #include <iostream>
 #include <queue>
 #include <string>
 
+#include "Eigen/Dense"
+#include "gtest/gtest.h"
+#include "robot_localization/filter_base.hpp"
 #include "robot_localization/filter_common.hpp"
 #include "robot_localization/filter_utilities.hpp"
-#include "robot_localization/filter_base.hpp"
 #include "robot_localization/measurement.hpp"
 
 using robot_localization::Measurement;
@@ -138,8 +136,8 @@ TEST(FilterBaseTest, DerivedFilterGetSet) {
 
   // Simple get/set checks
   double timeout = 7.4;
-  derived.setSensorTimeout(rclcpp::Duration(timeout));
-  EXPECT_EQ(derived.getSensorTimeout(), rclcpp::Duration(timeout));
+  derived.setSensorTimeout(rclcpp::Duration::from_seconds(timeout));
+  EXPECT_EQ(derived.getSensorTimeout(), rclcpp::Duration::from_seconds(timeout));
 
   double lastMeasTime = 3.83;
   derived.setLastMeasurementTime(rclcpp::Time(lastMeasTime));
