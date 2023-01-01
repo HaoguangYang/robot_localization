@@ -35,7 +35,11 @@
 #include "geometry_msgs/msg/accel_with_covariance_stamped.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
-#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
+#if __has_include("tf2_geometry_msgs/tf2_geometry_msgs.hpp")
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#else
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+#endif
 #include "tf2_ros/static_transform_broadcaster.h"
 
 int main(int argc, char ** argv)
