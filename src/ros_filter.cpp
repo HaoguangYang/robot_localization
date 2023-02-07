@@ -2293,7 +2293,7 @@ void RosFilter<T>::setPoseCallback(
   RCLCPP_INFO_STREAM(
     get_logger(),
     "Received set_pose request\n");
-    // with value\n" << geometry_msgs::msg::to_yaml(*msg));
+  // with value\n" << geometry_msgs::msg::to_yaml(*msg));
 
   std::string topic_name("set_pose");
 
