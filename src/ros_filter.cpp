@@ -2951,28 +2951,8 @@ bool RosFilter<T>::preparePose(
       update_vector[StateMemberPitch], 0, 0, 0,
       update_vector[StateMemberYaw]);
 
-    if (imu_data) {
-      /* We have to treat IMU orientation data differently. Even though we are
-       * dealing with pose data when we work with orientations, for IMUs, the
-       * frame_id is the frame in which the sensor is mounted, and not the
-       * coordinate frame of the IMU. Imagine an IMU that is mounted facing
-       * sideways. The pitch in the IMU frame becomes roll for the vehicle. This
-       * means that we need to rotate roll and pitch angles by the IMU's
-       * mounting yaw offset, and we must apply similar treatment to its update
-       * mask and covariance.
-       * */
-
-      double dummy, yaw;
-      target_frame_trans.getBasis().getRPY(dummy, dummy, yaw);
-      tf2::Matrix3x3 trans_tmp;
-      trans_tmp.setRPY(0.0, 0.0, yaw);
-
-      mask_position = trans_tmp * mask_position;
-      mask_orientation = trans_tmp * mask_orientation;
-    } else {
-      mask_position = target_frame_trans.getBasis() * mask_position;
-      mask_orientation = target_frame_trans.getBasis() * mask_orientation;
-    }
+    mask_position = target_frame_trans.getBasis() * mask_position;
+    mask_orientation = target_frame_trans.getBasis() * mask_orientation;
 
     // Now copy the mask values back into the update vector: any row with a
     // significant vector length indicates that we want to set that variable to
@@ -3028,14 +3008,7 @@ bool RosFilter<T>::preparePose(
     // return rot6d to its initial state.
     rot6d.setIdentity();
 
-    if (imu_data) {
-      // Apply the same special logic to the IMU covariance rotation
-      double dummy, yaw;
-      target_frame_trans.getBasis().getRPY(dummy, dummy, yaw);
-      rot.setRPY(0.0, 0.0, yaw);
-    } else {
-      rot.setRotation(target_frame_trans.getRotation());
-    }
+    rot.setRotation(target_frame_trans.getRotation());
 
     for (size_t r_ind = 0; r_ind < POSITION_SIZE; ++r_ind) {
       rot6d(r_ind, 0) = rot.getRow(r_ind).getX();
@@ -3058,41 +3031,12 @@ bool RosFilter<T>::preparePose(
      * body frame of the robot (e.g., base_link) to the mounting frame of the
      * robot. It is *not* the coordinate frame in which the IMU orientation data
      * is reported. If the IMU is mounted in a non-neutral orientation, we need
-     * to remove those offsets, and then we need to potentially "swap" roll and
-     * pitch. Note that this transform does NOT handle NED->ENU conversions.
-     * Data is assumed to be in the ENU frame when it is received.
+     * to remove those offsets. Note that this transform does NOT handle NED->ENU
+     * conversions. Data is assumed to be in the ENU frame when it is received.
      * */
     if (imu_data) {
-      // First, convert the transform and measurement rotation to RPY
-      // @todo: There must be a way to handle this with quaternions. Need to
-      // look into it.
-      double roll_offset = 0;
-      double pitch_offset = 0;
-      double yaw_offset = 0;
-      double roll = 0;
-      double pitch = 0;
-      double yaw = 0;
-      ros_filter_utilities::quatToRPY(
-        target_frame_trans.getRotation(),
-        roll_offset, pitch_offset, yaw_offset);
-      ros_filter_utilities::quatToRPY(pose_tmp.getRotation(), roll, pitch, yaw);
-
-      // 6b. Apply the offset (making sure to bound them), and throw them in a
-      // vector
-      tf2::Vector3 rpy_angles(
-        angles::normalize_angle(roll - roll_offset),
-        angles::normalize_angle(pitch - pitch_offset),
-        angles::normalize_angle(yaw - yaw_offset));
-
-      // 6c. Now we need to rotate the roll and pitch by the yaw offset value.
-      // Imagine a case where an IMU is mounted facing sideways. In that case
-      // pitch for the IMU's world frame is roll for the robot.
-      tf2::Matrix3x3 mat;
-      mat.setRPY(0.0, 0.0, yaw_offset);
-      rpy_angles = mat * rpy_angles;
-      pose_tmp.getBasis().setRPY(
-        rpy_angles.getX(), rpy_angles.getY(),
-        rpy_angles.getZ());
+      tf2::Quaternion q = target_frame_trans.getRotation();
+      pose_tmp.setRotation((q * pose_tmp.getRotation()).normalize());
 
       // We will use this target transformation later on, but
       // we've already transformed this data as if the IMU

@@ -748,7 +748,7 @@ void NavSatTransform::imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg)
       msg->header.stamp, transform_timeout_, target_frame_trans);
 
     if (can_transform) {
-      //FIXME: use this and comment out the old implementation.
+      // use full quaternion rotation and comment out the old implementation.
       tf2::Quaternion q = target_frame_trans.getRotation();
       transform_orientation_ = (transform_orientation_ * q.inverse()).normalize();
 
