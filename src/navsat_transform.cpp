@@ -569,7 +569,21 @@ void NavSatTransform::getRobotOriginWorldPose(
     transform_timeout_, transform_baselink_to_gps);
 
   if (can_transform) {
-    robot_odom_pose = gps_odom_pose * transform_baselink_to_gps.inverse();
+    tf2::Transform robot_orientation;
+    can_transform = ros_filter_utilities::lookupTransformSafe(
+      tf_buffer_.get(), world_frame_id_, base_link_frame_id_, transform_time,
+      transform_timeout_, robot_orientation);
+    if (can_transform) {
+      // add in rotated vector from gps frame to base_link
+      robot_orientation.setOrigin(tf2::Vector3(0., 0., 0.));
+      robot_odom_pose = gps_odom_pose * (robot_orientation * transform_baselink_to_gps.inverse());
+    } else {
+      RCLCPP_ERROR(
+        this->get_logger(),
+        "Could not obtain %s -> %s transform. "
+        "Will not remove offset of navsat device from robot's origin",
+        world_frame_id_.c_str(), base_link_frame_id_.c_str());
+    }
   } else {
     RCLCPP_ERROR(
       this->get_logger(),
