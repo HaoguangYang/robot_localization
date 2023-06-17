@@ -100,16 +100,6 @@ private:
     std::shared_ptr<robot_localization::srv::FromLL::Response> response);
 
   /**
-   * @brief Given the pose of the navsat sensor in the Cartesian frame, removes the
-   * offset from the vehicle's centroid and returns the Cartesian-frame pose of said
-   * centroid.
-   */
-  void getRobotOriginCartesianPose(
-    const tf2::Transform & gps_cartesian_pose,
-    tf2::Transform & robot_cartesian_pose,
-    const rclcpp::Time & transform_time);
-
-  /**
    * @brief Given the pose of the navsat sensor in the world frame, removes the
    * offset from the vehicle's centroid and returns the world-frame pose of said
    * centroid.
@@ -250,7 +240,7 @@ private:
   /**
    * @brief Whether or not the GPS fix is usable
    */
-  bool has_transform_gps_;
+  bool has_transform_enu_to_gps_init_;
 
   /**
    * @brief Signifies that we have received a usable IMU message
@@ -260,7 +250,7 @@ private:
   /**
    * @brief Signifies that we have received a usable odometry message
    */
-  bool has_transform_odom_;
+  bool has_transform_world_to_baselink_init_;
 
   /**
    * @brief IMU Subscription
@@ -275,12 +265,12 @@ private:
   /**
    * @brief Covariance for most recent GPS/UTM/LocalCartesian data
    */
-  Eigen::MatrixXd latest_cartesian_covariance_;
+  Eigen::MatrixXd transform_enu_to_gps_covariance_;
 
   /**
    * @brief Latest GPS data, stored as Cartesian coords
    */
-  tf2::Transform latest_cartesian_pose_;
+  tf2::Transform transform_enu_to_gps_;
 
   /**
    * @brief Latest odometry pose data
@@ -342,7 +332,7 @@ private:
   /**
    * @brief Latest IMU orientation
    */
-  tf2::Quaternion transform_orientation_;
+  tf2::Quaternion rot_localenu_to_baselink_init_;
 
   /**
    * @brief Parameter that specifies the how long we wait for a transform to
@@ -353,12 +343,12 @@ private:
   /**
    * @brief Holds the Cartesian (UTM or local ENU) pose that is used to compute the transform
    */
-  tf2::Transform transform_cartesian_pose_;
+  tf2::Transform transform_enu_to_gps_init_;
 
   /**
    * @brief Latest odom_frame -> odom_chld_frame transformation
    */
-  tf2::Transform transform_world_pose_;
+  tf2::Transform transform_world_to_baselink_init_;
 
   /**
    * @brief Whether we use a Local Cartesian (tangent plane ENU) or the UTM coordinates as our cartesian
@@ -412,12 +402,12 @@ private:
   /**
    * @brief Holds the cartesian->odom transform
    */
-  tf2::Transform cartesian_world_transform_;
+  tf2::Transform transform_world_to_enu_;
 
   /**
    * @brief Holds the odom->Cartesian transform for filtered GPS broadcast
    */
-  tf2::Transform cartesian_world_trans_inverse_;
+  tf2::Transform transform_enu_to_world_;
 
   /**
    * @brief Cartesian zone as determined after transforming GPS message

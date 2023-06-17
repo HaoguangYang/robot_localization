@@ -359,6 +359,31 @@ void RosFilter<T>::controlStampedCallback(
 }
 
 template<typename T>
+void RosFilter<T>::differentiateMeasurements(const rclcpp::Time & current_time)
+{
+  if (filter_.getInitializedStatus()) {
+    const double time_now = filter_utilities::toSec(current_time);
+    const double dt = time_now - last_diff_time_;
+    const Eigen::VectorXd & state = filter_.getState();
+    tf2::Vector3 new_state_twist_rot(
+      state(StateMemberVroll),
+      state(StateMemberVpitch),
+      state(StateMemberVyaw));
+    angular_acceleration_ = (new_state_twist_rot - last_state_twist_rot_) / dt;
+    const Eigen::MatrixXd & cov = filter_.getEstimateErrorCovariance();
+    for (size_t i = 0; i < ORIENTATION_SIZE; i++) {
+      for (size_t j = 0; j < ORIENTATION_SIZE; j++) {
+        angular_acceleration_cov_(i, j) =
+          cov(i + ORIENTATION_V_OFFSET, j + ORIENTATION_V_OFFSET) * 2. /
+          ( dt * dt );
+      }
+    }
+    last_state_twist_rot_ = new_state_twist_rot;
+    last_diff_time_ = time_now;
+  }
+}
+
+template<typename T>
 void RosFilter<T>::enqueueMeasurement(
   const std::string & topic_name, const Eigen::VectorXd & measurement,
   const Eigen::MatrixXd & measurement_covariance,
@@ -767,31 +792,6 @@ void RosFilter<T>::integrateMeasurements(const rclcpp::Time & current_time)
   }
 
   RF_DEBUG("\n----- /RosFilter<T>::integrateMeasurements ------\n");
-}
-
-template<typename T>
-void RosFilter<T>::differentiateMeasurements(const rclcpp::Time & current_time)
-{
-  if (filter_.getInitializedStatus()) {
-    const double time_now = filter_utilities::toSec(current_time);
-    const double dt = time_now - last_diff_time_;
-    const Eigen::VectorXd & state = filter_.getState();
-    tf2::Vector3 new_state_twist_rot(
-      state(StateMemberVroll),
-      state(StateMemberVpitch),
-      state(StateMemberVyaw));
-    angular_acceleration_ = (new_state_twist_rot - last_state_twist_rot_) / dt;
-    const Eigen::MatrixXd & cov = filter_.getEstimateErrorCovariance();
-    for (size_t i = 0; i < ORIENTATION_SIZE; i++) {
-      for (size_t j = 0; j < ORIENTATION_SIZE; j++) {
-        angular_acceleration_cov_(i, j) =
-          cov(i + ORIENTATION_V_OFFSET, j + ORIENTATION_V_OFFSET) * 2. /
-          ( dt * dt );
-      }
-    }
-    last_state_twist_rot_ = new_state_twist_rot;
-    last_diff_time_ = time_now;
-  }
 }
 
 template<typename T>
