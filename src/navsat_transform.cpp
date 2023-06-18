@@ -320,9 +320,7 @@ void NavSatTransform::computeTransform()
     *      This value will be 0.0 when use_local_cartesian is TRUE.
     */
   tf2::Quaternion q_yaw_offset;
-  q_yaw_offset.setRPY(0., 0., yaw_offset_);
-  tf2::Quaternion q_enu_correction;
-  q_enu_correction.setRPY(0., 0., magnetic_declination_ + utm_meridian_convergence_);
+  q_yaw_offset.setRPY(0., 0., yaw_offset_ + magnetic_declination_ + utm_meridian_convergence_);
 
   RCLCPP_INFO(
     this->get_logger(),
@@ -330,22 +328,22 @@ void NavSatTransform::computeTransform()
     "user-specified offset of %g and meridian convergence of %g. ",
     magnetic_declination_, yaw_offset_, utm_meridian_convergence_);
 
-  tf2::Quaternion imu_quat = q_enu_correction * rot_localenu_to_baselink_init_ * q_yaw_offset;
+  tf2::Quaternion imu_quat = q_yaw_offset * rot_localenu_to_baselink_init_;
 
   // The transform order will be orig_odom_pos * orig_cartesian_pos_inverse *
   // cur_cartesian_pos. Doing it this way will allow us to cope with having non-zero
   // odometry position when we get our first GPS message.
-  tf2::Transform cartesian_pose_with_orientation;
-  cartesian_pose_with_orientation.setOrigin(
+  tf2::Transform transform_enu_to_baselink;
+  transform_enu_to_baselink.setOrigin(
     transform_enu_to_baselink_init.getOrigin());
   // In case the cartisian -> base_link does not involve orientation,
   // override the orientation from the IMU source.
-  cartesian_pose_with_orientation.setRotation(imu_quat);
+  transform_enu_to_baselink.setRotation(imu_quat);
 
   // odom -> base_link -> cartesian
   transform_world_to_enu_.mult(
     transform_world_to_baselink_init_,
-    cartesian_pose_with_orientation.inverse());
+    transform_enu_to_baselink.inverse());
 
   transform_enu_to_world_ = transform_world_to_enu_.inverse();
 
@@ -576,7 +574,7 @@ void NavSatTransform::getRobotOriginWorldPose(
     if (can_transform) {
       // add in rotated vector from gps frame to base_link
       robot_orientation.setOrigin(tf2::Vector3(0., 0., 0.));
-      robot_odom_pose = gps_odom_pose * (robot_orientation * transform_baselink_to_gps.inverse());
+      robot_odom_pose.setOrigin(gps_odom_pose.getOrigin() + (robot_orientation * transform_baselink_to_gps.inverse()).getOrigin());
     } else {
       RCLCPP_ERROR(
         this->get_logger(),
