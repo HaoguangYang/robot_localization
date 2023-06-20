@@ -187,6 +187,11 @@ private:
   bool broadcast_cartesian_transform_as_parent_frame_;
 
   /**
+   * @brief scaling factor for cartesian coordinates
+   */
+  double cartesian_scale_;
+
+  /**
    * @brief TimerBase for publish callback
    */
   rclcpp::Service<robot_localization::srv::SetDatum>::SharedPtr datum_srv_;
@@ -258,6 +263,11 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
 
   /**
+   * @brief whether the pose is in northern hemisphere
+   */
+  bool is_northern_hemis_;
+
+  /**
    * @brief Covariance for most recent odometry data
    */
   Eigen::MatrixXd latest_odom_covariance_;
@@ -303,6 +313,11 @@ private:
    * them when new odometry data arrives.
    */
   bool odom_updated_;
+
+  /**
+   * @brief Whether to scale the UTM coordinates based on the scaling factor at the GPS coords
+   */
+  bool scale_utm_;
 
   /**
    * @brief Whether or not we publish filtered GPS messages
@@ -412,7 +427,7 @@ private:
   /**
    * @brief Cartesian zone as determined after transforming GPS message
    */
-  std::string utm_zone_;
+  int utm_zone_id_;
 
   /**
    * @brief Frame ID of the GPS odometry output

@@ -43,7 +43,7 @@
 #include "rclcpp/qos.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "robot_localization/filter_common.hpp"
-#include "robot_localization/navsat_conversions.hpp"
+#include "GeographicLib/UTMUPS.hpp"
 #include "robot_localization/ros_filter_utilities.hpp"
 #include "robot_localization/srv/from_ll.hpp"
 #include "robot_localization/srv/set_datum.hpp"
@@ -73,11 +73,13 @@ NavSatTransform::NavSatTransform(const rclcpp::NodeOptions & options)
   base_link_frame_id_("base_link"),
   broadcast_cartesian_transform_(false),
   broadcast_cartesian_transform_as_parent_frame_(false),
+  cartesian_scale_(1.0),
   gps_frame_id_(""),
   gps_updated_(false),
   has_transform_enu_to_gps_init_(false),
   has_transform_imu_(false),
   has_transform_world_to_baselink_init_(false),
+  is_northern_hemis_(true),
   magnetic_declination_(0.0),
   odom_updated_(false),
   publish_gps_(false),
@@ -90,7 +92,7 @@ NavSatTransform::NavSatTransform(const rclcpp::NodeOptions & options)
   gps_odom_in_cartesian_frame_(false),
   cartesian_broadcaster_(*this),
   utm_meridian_convergence_(0.0),
-  utm_zone_(""),
+  utm_zone_id_(0),
   world_frame_id_(""),
   yaw_offset_(0.0),
   zero_altitude_(false)
@@ -113,6 +115,7 @@ NavSatTransform::NavSatTransform(const rclcpp::NodeOptions & options)
   use_odometry_yaw_ = this->declare_parameter("use_odometry_yaw", false);
   use_manual_datum_ = this->declare_parameter("wait_for_datum", false);
   use_local_cartesian_ = this->declare_parameter("use_local_cartesian", false);
+  scale_utm_ = this->declare_parameter("scale_utm", false);
   frequency = this->declare_parameter("frequency", frequency);
   delay = this->declare_parameter("delay", delay);
   transform_timeout = this->declare_parameter("transform_timeout", transform_timeout);
@@ -152,7 +155,8 @@ NavSatTransform::NavSatTransform(const rclcpp::NodeOptions & options)
       "publish_gps_odom_in_cartesian_frame",
       gps_odom_in_cartesian_frame_);
     if (gps_odom_in_cartesian_frame_)
-      world_frame_id_ = use_local_cartesian_ ? "local_enu" : "utm";
+      world_frame_id_ = use_local_cartesian_ ? "local_enu" :
+        scale_utm_? "utm_scaled" : "utm";
   }
 
   datum_srv_ = this->create_service<robot_localization::srv::SetDatum>(
@@ -356,7 +360,8 @@ void NavSatTransform::computeTransform()
   if (broadcast_cartesian_transform_) {
     geometry_msgs::msg::TransformStamped cartesian_transform_stamped;
     cartesian_transform_stamped.header.stamp = this->now();
-    std::string cartesian_frame_id = (use_local_cartesian_ ? "local_enu" : "utm");
+    std::string cartesian_frame_id = (use_local_cartesian_ ? "local_enu" :
+      scale_utm_? "utm_scaled" : "utm");
     cartesian_transform_stamped.header.frame_id =
       (broadcast_cartesian_transform_as_parent_frame_ ? cartesian_frame_id : world_frame_id_);
     cartesian_transform_stamped.child_frame_id =
@@ -464,13 +469,22 @@ bool NavSatTransform::fromLLCallback(
       cartesian_y,
       cartesian_z);
   } else {
-    std::string utm_zone_tmp;
-    navsat_conversions::LLtoUTM(
+    int utm_zone_tmp;
+    bool northp_tmp;
+    double gamma_tmp, scale;
+    GeographicLib::UTMUPS::Forward(
       latitude,
       longitude,
-      cartesian_y,
+      utm_zone_tmp,
+      northp_tmp,
       cartesian_x,
-      utm_zone_tmp);
+      cartesian_y,
+      gamma_tmp,
+      scale);
+    if (scale_utm_){
+      cartesian_x /= scale;
+      cartesian_y /= scale;
+    }
   }
 
   cartesian_pose.setOrigin(tf2::Vector3(cartesian_x, cartesian_y, altitude));
@@ -506,12 +520,17 @@ nav_msgs::msg::Odometry NavSatTransform::cartesianToMap(
 
     transform_world_to_gps.mult(transform_world_to_enu_, cartesian_pose);
     // transform_world_to_gps.setRotation(tf2::Quaternion::getIdentity());
-  
+    // scale horizontal displacement
+    tf2::Vector3 scaled_translation = transform_world_to_gps.getOrigin();
+    if (!scale_utm_){
+      scaled_translation.setX(scaled_translation.getX() / cartesian_scale_);
+      scaled_translation.setY(scaled_translation.getY() / cartesian_scale_);
+    }
+    transform_world_to_gps.setOrigin(scaled_translation);
     tf2::toMsg(transform_world_to_gps, gps_odom.pose.pose);
   }
 
-  gps_odom.pose.pose.position.z = (zero_altitude_ ? 0.0 :
-    gps_odom.pose.pose.position.z);
+  if (zero_altitude_) gps_odom.pose.pose.position.z = 0.0;
 
   return gps_odom;
 }
@@ -528,7 +547,10 @@ void NavSatTransform::mapToLL(
     odom_as_cartesian.setOrigin(point);
   } else {
     tf2::Transform pose{};
-    pose.setOrigin(point);
+    pose.setOrigin(scale_utm_ ? point : tf2::Vector3(
+      point.x() * cartesian_scale_,
+      point.y() * cartesian_scale_,
+      point.z()));
     pose.setRotation(tf2::Quaternion::getIdentity());
 
     odom_as_cartesian.mult(transform_enu_to_world_, pose);
@@ -544,12 +566,12 @@ void NavSatTransform::mapToLL(
       latitude, longitude, altitude
     );
   } else {
-    navsat_conversions::UTMtoLL(
-      odom_as_cartesian.getOrigin().getY(),
+    GeographicLib::UTMUPS::Reverse(
+      utm_zone_id_,
+      is_northern_hemis_,
       odom_as_cartesian.getOrigin().getX(),
-      utm_zone_,
-      latitude,
-      longitude);
+      odom_as_cartesian.getOrigin().getY(),
+      latitude, longitude);
     altitude = odom_as_cartesian.getOrigin().getZ();
   }
 }
@@ -640,13 +662,22 @@ void NavSatTransform::gpsFixCallback(
       cartesian_y,
       cartesian_z);
   } else {
-    std::string cartesian_zone_tmp;
-    navsat_conversions::LLtoUTM(
+    int utm_zone_tmp;
+    bool northp_tmp;
+    double gamma_tmp, scale;
+    GeographicLib::UTMUPS::Forward(
       msg->latitude,
       msg->longitude,
-      cartesian_y,
+      utm_zone_tmp,
+      northp_tmp,
       cartesian_x,
-      cartesian_zone_tmp);
+      cartesian_y,
+      gamma_tmp,
+      scale);
+    if (scale_utm_){
+      cartesian_x /= scale;
+      cartesian_y /= scale;
+    }
   }
   // This is from enu/utm to gps frame, not base_link.
   transform_enu_to_gps_.setOrigin(tf2::Vector3(cartesian_x, cartesian_y, cartesian_z));
@@ -839,6 +870,7 @@ void NavSatTransform::setTransformGps(
   double cartesian_x {};
   double cartesian_y {};
   double cartesian_z {};
+  std::string utm_zone;
   if (use_local_cartesian_) {
     const double hae_altitude {};
     gps_local_cartesian_.Reset(msg->latitude, msg->longitude, hae_altitude);
@@ -852,14 +884,22 @@ void NavSatTransform::setTransformGps(
     // UTM meridian convergence is not meaningful when using local cartesian, so set it to 0.0
     utm_meridian_convergence_ = 0.0;
   } else {
-    navsat_conversions::LLtoUTM(
+    GeographicLib::UTMUPS::Forward(
       msg->latitude,
       msg->longitude,
-      cartesian_y,
+      utm_zone_id_,
+      is_northern_hemis_,
       cartesian_x,
-      utm_zone_,
-      utm_meridian_convergence_);
-    utm_meridian_convergence_ *= navsat_conversions::RADIANS_PER_DEGREE;
+      cartesian_y,
+      utm_meridian_convergence_,
+      cartesian_scale_);
+    if (scale_utm_){
+      cartesian_x /= cartesian_scale_;
+      cartesian_y /= cartesian_scale_;
+    }
+    utm_zone = GeographicLib::UTMUPS::EncodeZone(utm_zone_id_, is_northern_hemis_);
+    // convert to radians
+    utm_meridian_convergence_ *= M_PIf64 / 180.0;
   }
 
   RCLCPP_INFO(
@@ -867,7 +907,7 @@ void NavSatTransform::setTransformGps(
     msg->latitude, msg->longitude, msg->altitude);
   RCLCPP_INFO(
     this->get_logger(), "Datum %s coordinate is (%s, %0.2f, %0.2f)",
-    ((use_local_cartesian_) ? "Local Cartesian" : "UTM"), utm_zone_.c_str(), cartesian_x,
+    ((use_local_cartesian_) ? "Local Cartesian" : "UTM"), utm_zone.c_str(), cartesian_x,
     cartesian_y);
 
   transform_enu_to_gps_init_.setOrigin(tf2::Vector3(cartesian_x, cartesian_y, msg->altitude));
