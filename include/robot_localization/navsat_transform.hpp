@@ -315,9 +315,14 @@ private:
   bool odom_updated_;
 
   /**
+   * @brief Frame ID to express UTM coordinates, referred to when use_local_cartesian_ is false
+   */
+  std::string utm_frame_id_;
+
+  /**
    * @brief Whether to scale the UTM coordinates based on the scaling factor at the GPS coords
    */
-  bool scale_utm_;
+  bool utm_scaled_;
 
   /**
    * @brief Whether or not we publish filtered GPS messages
