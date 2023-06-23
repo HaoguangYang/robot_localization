@@ -71,8 +71,6 @@ namespace robot_localization
 NavSatTransform::NavSatTransform(const rclcpp::NodeOptions & options)
 : Node("navsat_transform_node", options),
   base_link_frame_id_("base_link"),
-  broadcast_cartesian_transform_(false),
-  broadcast_cartesian_transform_as_parent_frame_(false),
   cartesian_scale_(1.0),
   gps_frame_id_(""),
   gps_updated_(false),
@@ -89,7 +87,6 @@ NavSatTransform::NavSatTransform(const rclcpp::NodeOptions & options)
   use_manual_datum_(false),
   manual_datum_set_(false),
   use_odometry_yaw_(false),
-  gps_odom_in_cartesian_frame_(false),
   cartesian_broadcaster_(*this),
   utm_meridian_convergence_(0.0),
   utm_zone_id_(0),
@@ -115,8 +112,7 @@ NavSatTransform::NavSatTransform(const rclcpp::NodeOptions & options)
   use_odometry_yaw_ = this->declare_parameter("use_odometry_yaw", false);
   use_manual_datum_ = this->declare_parameter("wait_for_datum", false);
   use_local_cartesian_ = this->declare_parameter("use_local_cartesian", false);
-  utm_scaled_ = this->declare_parameter("utm_scaled", false);
-  utm_frame_id_ = this->declare_parameter("utm_frame_id", utm_scaled_? "utm_scaled" : "utm");
+  utm_frame_id_ = this->declare_parameter("utm_frame_id", "utm");
   frequency = this->declare_parameter("frequency", frequency);
   delay = this->declare_parameter("delay", delay);
   transform_timeout = this->declare_parameter("transform_timeout", transform_timeout);
@@ -124,7 +120,7 @@ NavSatTransform::NavSatTransform(const rclcpp::NodeOptions & options)
   transform_timeout_ = tf2::durationFromSec(transform_timeout);
 
   broadcast_cartesian_transform_ =
-    this->declare_parameter("broadcast_utm_transform", broadcast_cartesian_transform_);
+    this->declare_parameter("broadcast_utm_transform", false);
 
   if (broadcast_cartesian_transform_) {
     RCLCPP_WARN(
@@ -132,13 +128,13 @@ NavSatTransform::NavSatTransform(const rclcpp::NodeOptions & options)
       "Please use 'broadcast_cartesian_transform' instead.");
   } else {
     broadcast_cartesian_transform_ =
-      this->declare_parameter("broadcast_cartesian_transform", broadcast_cartesian_transform_);
+      this->declare_parameter("broadcast_cartesian_transform", false);
   }
 
   broadcast_cartesian_transform_as_parent_frame_ =
     this->declare_parameter(
     "broadcast_utm_transform_as_parent_frame_",
-    broadcast_cartesian_transform_as_parent_frame_);
+    false);
 
   if (broadcast_cartesian_transform_as_parent_frame_) {
     RCLCPP_WARN(
@@ -148,15 +144,18 @@ NavSatTransform::NavSatTransform(const rclcpp::NodeOptions & options)
     broadcast_cartesian_transform_as_parent_frame_ =
       this->declare_parameter(
       "broadcast_cartesian_transform_as_parent_frame",
-      broadcast_cartesian_transform_as_parent_frame_);
+      false);
   }
 
-  if (!broadcast_cartesian_transform_as_parent_frame_) {
+  if (!broadcast_cartesian_transform_) {
     gps_odom_in_cartesian_frame_ = this->declare_parameter(
       "publish_gps_odom_in_cartesian_frame",
-      gps_odom_in_cartesian_frame_);
+      false);
     if (gps_odom_in_cartesian_frame_)
       world_frame_id_ = use_local_cartesian_ ? "local_enu" : utm_frame_id_;
+  } else {
+    // since transform from cartesian to odom has been published, no need to do this.
+    gps_odom_in_cartesian_frame_ = false;
   }
 
   datum_srv_ = this->create_service<robot_localization::srv::SetDatum>(
@@ -480,10 +479,6 @@ bool NavSatTransform::fromLLCallback(
       cartesian_y,
       gamma_tmp,
       scale);
-    if (utm_scaled_){
-      cartesian_x /= scale;
-      cartesian_y /= scale;
-    }
   }
 
   cartesian_pose.setOrigin(tf2::Vector3(cartesian_x, cartesian_y, altitude));
@@ -520,12 +515,12 @@ nav_msgs::msg::Odometry NavSatTransform::cartesianToMap(
     transform_world_to_gps.mult(transform_world_to_enu_, cartesian_pose);
     // transform_world_to_gps.setRotation(tf2::Quaternion::getIdentity());
     // scale horizontal displacement
-    tf2::Vector3 scaled_translation = transform_world_to_gps.getOrigin();
-    if (!utm_scaled_){
+    if (!use_local_cartesian_){
+      tf2::Vector3 scaled_translation = transform_world_to_gps.getOrigin();
       scaled_translation.setX(scaled_translation.getX() / cartesian_scale_);
       scaled_translation.setY(scaled_translation.getY() / cartesian_scale_);
+      transform_world_to_gps.setOrigin(scaled_translation);
     }
-    transform_world_to_gps.setOrigin(scaled_translation);
     tf2::toMsg(transform_world_to_gps, gps_odom.pose.pose);
   }
 
@@ -546,7 +541,9 @@ void NavSatTransform::mapToLL(
     odom_as_cartesian.setOrigin(point);
   } else {
     tf2::Transform pose{};
-    pose.setOrigin(utm_scaled_ ? point : tf2::Vector3(
+    // if we are using local ENU or UTM has considered scaling,
+    // we don't need to scale from real world to projection plane.
+    pose.setOrigin(use_local_cartesian_ ? point : tf2::Vector3(
       point.x() * cartesian_scale_,
       point.y() * cartesian_scale_,
       point.z()));
@@ -673,10 +670,6 @@ void NavSatTransform::gpsFixCallback(
       cartesian_y,
       gamma_tmp,
       scale);
-    if (utm_scaled_){
-      cartesian_x /= scale;
-      cartesian_y /= scale;
-    }
   }
   // This is from enu/utm to gps frame, not base_link.
   transform_enu_to_gps_.setOrigin(tf2::Vector3(cartesian_x, cartesian_y, cartesian_z));
@@ -892,10 +885,6 @@ void NavSatTransform::setTransformGps(
       cartesian_y,
       utm_meridian_convergence_,
       cartesian_scale_);
-    if (utm_scaled_){
-      cartesian_x /= cartesian_scale_;
-      cartesian_y /= cartesian_scale_;
-    }
     utm_zone = GeographicLib::UTMUPS::EncodeZone(utm_zone_id_, is_northern_hemis_);
     // convert to radians
     utm_meridian_convergence_ *= M_PIf64 / 180.0;

@@ -320,11 +320,6 @@ private:
   std::string utm_frame_id_;
 
   /**
-   * @brief Whether to scale the UTM coordinates based on the scaling factor at the GPS coords
-   */
-  bool utm_scaled_;
-
-  /**
    * @brief Whether or not we publish filtered GPS messages
    */
   bool publish_gps_;
@@ -375,8 +370,9 @@ private:
    */
   bool use_local_cartesian_;
 
-  //! @brief Local Cartesian projection around gps origin
-  //!
+  /**
+   * @brief Local Cartesian projection around gps origin
+   */
   GeographicLib::LocalCartesian gps_local_cartesian_;
 
   /**
