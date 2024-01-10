@@ -168,6 +168,11 @@ private:
     double & altitude) const;
 
   /**
+   * @brief Sets the manual datum pose to be used by the transform computation
+   */
+  void setManualDatum();
+
+  /**
    * @brief Frame ID of the robot's body frame
    *
    * This is needed for obtaining transforms from the robot's body frame to the
@@ -453,6 +458,15 @@ private:
    * converted GPS odometry message.
    */
   bool zero_altitude_;
+
+  /**
+   * @brief Manual datum pose to be used by the transform computation
+   *
+   * Then manual datum requested by a service request (or configuration) is stored
+   * here until the odom message is received, and the manual datum pose can be
+   * set.
+   */
+  geographic_msgs::msg::GeoPose manual_datum_geopose_;  
 };
 
 }  // namespace robot_localization
