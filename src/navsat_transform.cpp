@@ -592,7 +592,8 @@ void NavSatTransform::getRobotOriginWorldPose(
     if (can_transform) {
       // add in rotated vector from gps frame to base_link
       robot_orientation.setOrigin(tf2::Vector3(0., 0., 0.));
-      robot_odom_pose.setOrigin(gps_odom_pose.getOrigin() + (robot_orientation * transform_baselink_to_gps.inverse()).getOrigin());
+      robot_odom_pose.setOrigin(gps_odom_pose.getOrigin() -
+        (robot_orientation * transform_baselink_to_gps).getOrigin());
     } else {
       RCLCPP_ERROR(
         this->get_logger(),
