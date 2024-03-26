@@ -80,15 +80,15 @@ private:
   /**
    * @brief Computes the transform from the Cartesian frame to the odom frame
    */
-  void computeTransform();
+  bool computeTransform();
 
   /**
    * @brief Callback for the datum service
    */
   bool datumCallback(
-    const std::shared_ptr<robot_localization::srv::SetDatum::Request>
+    const robot_localization::srv::SetDatum::Request::SharedPtr
     request,
-    std::shared_ptr<robot_localization::srv::SetDatum::Response>);
+    robot_localization::srv::SetDatum::Response::SharedPtr);
 
   //! @brief Callback for the to Lat Long service
   //!

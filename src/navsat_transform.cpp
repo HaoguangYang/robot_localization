@@ -259,9 +259,7 @@ void NavSatTransform::transformCallback()
     if (use_manual_datum_ && !manual_datum_set_)
       return;   // still waiting on first valid GPS and odom
 
-    computeTransform();
-
-    if (transform_good_ && !use_odometry_yaw_ && !use_manual_datum_) {
+    if (computeTransform() && !use_odometry_yaw_ && !use_manual_datum_) {
       // Once we have the transform, we don't need the IMU
       imu_sub_.reset();
     }
@@ -280,7 +278,7 @@ void NavSatTransform::transformCallback()
   }
 }
 
-void NavSatTransform::computeTransform()
+bool NavSatTransform::computeTransform()
 {
   // When using manual datum, wait for the receive of odometry message so
   // that the base frame and world frame names can be set before
@@ -289,107 +287,109 @@ void NavSatTransform::computeTransform()
     setManualDatum();
   }
 
-  if (transform_good_ || !has_transform_world_to_baselink_init_ ||
-   !has_transform_enu_to_gps_init_ || !has_transform_imu_)
-    return;
-
   // Only do this if:
   // 1. We haven't computed the odom_frame->cartesian_frame transform before
   // 2. We've received the data we need
-
-  // The UTM pose we have is given at the location of the GPS sensor on the
-  // robot. We need to get the UTM pose of the robot's origin.
-  tf2::Transform transform_enu_to_baselink_init = transform_enu_to_gps_init_;
-  if (!use_manual_datum_) {
-    tf2::Transform offset;
-    bool can_transform = ros_filter_utilities::lookupTransformSafe(
-      tf_buffer_.get(), base_link_frame_id_, gps_frame_id_, rclcpp::Time(0),
-      transform_timeout_, offset);
-    if (can_transform){
-      transform_enu_to_baselink_init = transform_enu_to_gps_init_ * offset.inverse();
-    } else if (gps_frame_id_ != "") {
-      RCLCPP_ERROR(
-        this->get_logger(),
-        "Unable to obtain %s -> %s transform. "
-        "Will assume navsat device is mounted at robots origin",
-        base_link_frame_id_.c_str(), gps_frame_id_.c_str());
+  if (!transform_good_ && has_transform_world_to_baselink_init_ && 
+    has_transform_enu_to_gps_init_ && has_transform_imu_)
+  {
+    // The UTM pose we have is given at the location of the GPS sensor on the
+    // robot. We need to get the UTM pose of the robot's origin.
+    tf2::Transform transform_enu_to_baselink_init = transform_enu_to_gps_init_;
+    if (!use_manual_datum_) {
+      tf2::Transform offset;
+      bool can_transform = ros_filter_utilities::lookupTransformSafe(
+        tf_buffer_.get(), base_link_frame_id_, gps_frame_id_, rclcpp::Time(0),
+        transform_timeout_, offset);
+      if (can_transform){
+        transform_enu_to_baselink_init = transform_enu_to_gps_init_ * offset.inverse();
+      } else if (gps_frame_id_ != "") {
+        RCLCPP_ERROR(
+          this->get_logger(),
+          "Unable to obtain %s -> %s transform. "
+          "Will assume navsat device is mounted at robots origin",
+          base_link_frame_id_.c_str(), gps_frame_id_.c_str());
+      }
     }
+
+    /* The IMU's heading was likely originally reported w.r.t. magnetic north.
+     * However, all the nodes in robot_localization assume that orientation
+     * data, including that reported by IMUs, is reported in an ENU frame, with
+     * a 0 yaw value being reported when facing east and increasing
+     * counter-clockwise (i.e., towards north). To make the world frame ENU
+     * aligned, where X is east and Y is north, we have to take into account
+     * three additional considerations:
+     *   1. The IMU may have its non-ENU frame data transformed to ENU, but
+     *      there's a possibility that its data has not been corrected for
+     *      magnetic declination. We need to account for this. A positive
+     *      magnetic declination is counter-clockwise in an ENU frame.
+     *      Therefore, if we have a magnetic declination of N radians, then when
+     *      the sensor is facing a heading of N, it reports 0. Therefore, we
+     *      need to add the declination angle.
+     *   2. To account for any other offsets that may not be accounted for by
+     *      the IMU driver or any interim processing node, we expose a yaw
+     *      offset that lets users work with navsat_transform_node.
+     *   3. UTM grid isn't aligned with True East\North. To account for the
+     *      difference we need to add meridian convergence angle when using UTM.
+     *      This value will be 0.0 when use_local_cartesian is TRUE.
+     */
+    tf2::Quaternion q_yaw_offset;
+    q_yaw_offset.setRPY(0., 0., yaw_offset_ + magnetic_declination_ + utm_meridian_convergence_);
+
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Corrected for magnetic declination of %g, "
+      "user-specified offset of %g and meridian convergence of %g. ",
+      magnetic_declination_, yaw_offset_, utm_meridian_convergence_);
+
+    tf2::Quaternion imu_quat = q_yaw_offset * rot_localenu_to_baselink_init_;
+
+    // The transform order will be orig_odom_pos * orig_cartesian_pos_inverse *
+    // cur_cartesian_pos. Doing it this way will allow us to cope with having non-zero
+    // odometry position when we get our first GPS message.
+    tf2::Transform transform_enu_to_baselink;
+    transform_enu_to_baselink.setOrigin(
+      transform_enu_to_baselink_init.getOrigin());
+    // In case the cartisian -> base_link does not involve orientation,
+    // override the orientation from the IMU source.
+    transform_enu_to_baselink.setRotation(imu_quat);
+
+    // odom -> base_link -> cartesian
+    transform_world_to_enu_.mult(
+      transform_world_to_baselink_init_,
+      transform_enu_to_baselink.inverse());
+
+    transform_enu_to_world_ = transform_world_to_enu_.inverse();
+
+    transform_good_ = true;
+
+    // Send out the (static) UTM transform in case anyone else would like to use
+    // it.
+    // The if condition at the beginning asserts setTransformOdometry() has been called,
+    // which means we have a valid world_frame_id_.
+    if (broadcast_cartesian_transform_) {
+      geometry_msgs::msg::TransformStamped cartesian_transform_stamped;
+      cartesian_transform_stamped.header.stamp = this->now();
+      std::string cartesian_frame_id = (use_local_cartesian_ ? "local_enu" : utm_frame_id_);
+      cartesian_transform_stamped.header.frame_id =
+        (broadcast_cartesian_transform_as_parent_frame_ ? cartesian_frame_id : world_frame_id_);
+      cartesian_transform_stamped.child_frame_id =
+        (broadcast_cartesian_transform_as_parent_frame_ ? world_frame_id_ : cartesian_frame_id);
+      cartesian_transform_stamped.transform =
+        (broadcast_cartesian_transform_as_parent_frame_ ?
+        tf2::toMsg(transform_enu_to_world_) : tf2::toMsg(transform_world_to_enu_));
+      cartesian_transform_stamped.transform.translation.z =
+        (zero_altitude_ ? 0.0 : cartesian_transform_stamped.transform.translation.z);
+      cartesian_broadcaster_.sendTransform(cartesian_transform_stamped);
+    }
+    return true;
   }
 
-  /* The IMU's heading was likely originally reported w.r.t. magnetic north.
-    * However, all the nodes in robot_localization assume that orientation
-    * data, including that reported by IMUs, is reported in an ENU frame, with
-    * a 0 yaw value being reported when facing east and increasing
-    * counter-clockwise (i.e., towards north). To make the world frame ENU
-    * aligned, where X is east and Y is north, we have to take into account
-    * three additional considerations:
-    *   1. The IMU may have its non-ENU frame data transformed to ENU, but
-    *      there's a possibility that its data has not been corrected for
-    *      magnetic declination. We need to account for this. A positive
-    *      magnetic declination is counter-clockwise in an ENU frame.
-    *      Therefore, if we have a magnetic declination of N radians, then when
-    *      the sensor is facing a heading of N, it reports 0. Therefore, we
-    *      need to add the declination angle.
-    *   2. To account for any other offsets that may not be accounted for by
-    *      the IMU driver or any interim processing node, we expose a yaw
-    *      offset that lets users work with navsat_transform_node.
-    *   3. UTM grid isn't aligned with True East\North. To account for the
-    *      difference we need to add meridian convergence angle when using UTM.
-    *      This value will be 0.0 when use_local_cartesian is TRUE.
-    */
-  tf2::Quaternion q_yaw_offset;
-  q_yaw_offset.setRPY(0., 0., yaw_offset_ + magnetic_declination_ + utm_meridian_convergence_);
-
-  RCLCPP_INFO(
-    this->get_logger(),
-    "Corrected for magnetic declination of %g, "
-    "user-specified offset of %g and meridian convergence of %g. ",
-    magnetic_declination_, yaw_offset_, utm_meridian_convergence_);
-
-  tf2::Quaternion imu_quat = q_yaw_offset * rot_localenu_to_baselink_init_;
-
-  // The transform order will be orig_odom_pos * orig_cartesian_pos_inverse *
-  // cur_cartesian_pos. Doing it this way will allow us to cope with having non-zero
-  // odometry position when we get our first GPS message.
-  tf2::Transform transform_enu_to_baselink;
-  transform_enu_to_baselink.setOrigin(
-    transform_enu_to_baselink_init.getOrigin());
-  // In case the cartisian -> base_link does not involve orientation,
-  // override the orientation from the IMU source.
-  transform_enu_to_baselink.setRotation(imu_quat);
-
-  // odom -> base_link -> cartesian
-  transform_world_to_enu_.mult(
-    transform_world_to_baselink_init_,
-    transform_enu_to_baselink.inverse());
-
-  transform_enu_to_world_ = transform_world_to_enu_.inverse();
-
-  transform_good_ = true;
-
-  // Send out the (static) UTM transform in case anyone else would like to use
-  // it.
-  // The if condition at the beginning asserts setTransformOdometry() has been called,
-  // which means we have a valid world_frame_id_.
-  if (broadcast_cartesian_transform_) {
-    geometry_msgs::msg::TransformStamped cartesian_transform_stamped;
-    cartesian_transform_stamped.header.stamp = this->now();
-    std::string cartesian_frame_id = (use_local_cartesian_ ? "local_enu" : utm_frame_id_);
-    cartesian_transform_stamped.header.frame_id =
-      (broadcast_cartesian_transform_as_parent_frame_ ? cartesian_frame_id : world_frame_id_);
-    cartesian_transform_stamped.child_frame_id =
-      (broadcast_cartesian_transform_as_parent_frame_ ? world_frame_id_ : cartesian_frame_id);
-    cartesian_transform_stamped.transform =
-      (broadcast_cartesian_transform_as_parent_frame_ ?
-      tf2::toMsg(transform_enu_to_world_) : tf2::toMsg(transform_world_to_enu_));
-    cartesian_transform_stamped.transform.translation.z =
-      (zero_altitude_ ? 0.0 : cartesian_transform_stamped.transform.translation.z);
-    cartesian_broadcaster_.sendTransform(cartesian_transform_stamped);
-  }
+  return false;
 }
 
 bool NavSatTransform::datumCallback(
-  robot_localization::srv::SetDatum::Request::SharedPtr request,
+  const robot_localization::srv::SetDatum::Request::SharedPtr request,
   robot_localization::srv::SetDatum::Response::SharedPtr)
 {
   // store manual data geopose until the transform can be computed.
@@ -642,7 +642,7 @@ void NavSatTransform::getRobotOriginCartesianPose(
 
     // Update the initial pose
     robot_cartesian_pose = offset.inverse() * gps_cartesian_pose;
-  }  else {
+  } else {
     if (gps_frame_id_ != "") {
       RCLCPP_ERROR(
         this->get_logger(),
@@ -710,86 +710,85 @@ void NavSatTransform::gpsFixCallback(
     !std::isnan(msg->altitude) && !std::isnan(msg->latitude) &&
     !std::isnan(msg->longitude));
 
-  if (!good_gps)
-    return;
-
-  // If we haven't computed the transform yet, then
-  // store this message as the initial GPS data to use
-  if (!transform_good_) {
-    if (!use_manual_datum_)
-      setTransformGps(msg);
-    else if (!manual_datum_set_ && world_frame_id_ != "") {
-      // hold back initial datum callback until here,
-      // such that a valid gps fix altitude and a valid world frame id are obtained.
-      if (isnan(manual_datum_req_->geo_pose.position.altitude))
-        manual_datum_req_->geo_pose.position.altitude = msg->altitude;
-      auto response = std::make_shared<robot_localization::srv::SetDatum::Response>();
-      datumCallback(manual_datum_req_, response);
+  if (good_gps) {
+    // If we haven't computed the transform yet, then
+    // store this message as the initial GPS data to use
+    if (!transform_good_) {
+      if (!use_manual_datum_)
+        setTransformGps(msg);
+      else if (!manual_datum_set_ && world_frame_id_ != "") {
+        // hold back initial datum callback until here,
+        // such that a valid gps fix altitude and a valid world frame id are obtained.
+        if (isnan(manual_datum_req_->geo_pose.position.altitude))
+          manual_datum_req_->geo_pose.position.altitude = msg->altitude;
+        auto response = std::make_shared<robot_localization::srv::SetDatum::Response>();
+        datumCallback(manual_datum_req_, response);
+      }
     }
-  }
 
-  double cartesian_x = 0;
-  double cartesian_y = 0;
-  double cartesian_z = msg->altitude;
+    double cartesian_x = 0;
+    double cartesian_y = 0;
+    double cartesian_z = msg->altitude;
 
-  if (use_local_cartesian_) {
-    gps_local_cartesian_.Forward(
-      msg->latitude,
-      msg->longitude,
-      msg->altitude,
-      cartesian_x,
-      cartesian_y,
-      cartesian_z);
-  } else {
-    int zone_tmp;
-    bool northp_tmp;
-    GeographicLib::UTMUPS::Forward(
-      msg->latitude, msg->longitude,
-      zone_tmp, northp_tmp, cartesian_x, cartesian_y);
-  }
-
-  // This is from enu/utm to gps frame, not base_link.
-  transform_enu_to_gps_.setOrigin(tf2::Vector3(cartesian_x, cartesian_y, cartesian_z));
-  transform_enu_to_gps_.setRotation(tf2::Quaternion::getIdentity());
-  transform_enu_to_gps_covariance_.setZero();
-
-  // Copy the measurement's covariance matrix so that we can rotate it later
-  for (size_t i = 0; i < POSITION_SIZE; i++) {
-    for (size_t j = 0; j < POSITION_SIZE; j++) {
-      transform_enu_to_gps_covariance_(i, j) =
-        msg->position_covariance[POSITION_SIZE * i + j];
+    if (use_local_cartesian_) {
+      gps_local_cartesian_.Forward(
+        msg->latitude,
+        msg->longitude,
+        msg->altitude,
+        cartesian_x,
+        cartesian_y,
+        cartesian_z);
+    } else {
+      int zone_tmp;
+      bool northp_tmp;
+      GeographicLib::UTMUPS::Forward(
+        msg->latitude, msg->longitude,
+        zone_tmp, northp_tmp, cartesian_x, cartesian_y);
     }
-  }
 
-  gps_update_time_ = msg->header.stamp;
-  gps_updated_ = true;
+    // This is from enu/utm to gps frame, not base_link.
+    transform_enu_to_gps_.setOrigin(tf2::Vector3(cartesian_x, cartesian_y, cartesian_z));
+    transform_enu_to_gps_.setRotation(tf2::Quaternion::getIdentity());
+    transform_enu_to_gps_covariance_.setZero();
+
+    // Copy the measurement's covariance matrix so that we can rotate it later
+    for (size_t i = 0; i < POSITION_SIZE; i++) {
+      for (size_t j = 0; j < POSITION_SIZE; j++) {
+        transform_enu_to_gps_covariance_(i, j) =
+          msg->position_covariance[POSITION_SIZE * i + j];
+      }
+    }
+
+    gps_update_time_ = msg->header.stamp;
+    gps_updated_ = true;
+  }
 }
 
 void NavSatTransform::imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg)
 {
   // We need the base_link_frame_id_ from the odometry message, so
   // we need to wait until we receive it.
-  if (!has_transform_world_to_baselink_init_)
-    return;
-  /* This method only gets called if we don't yet have the
-   * IMU data (the subscriber gets shut down once we compute
-   * the transform), so we can assumed that every IMU message
-   * that comes here is meant to be used for that purpose. */
-  // orientation from local_enu -> base_link (express in imu_frame first)
-  tf2::fromMsg(msg->orientation, rot_localenu_to_baselink_init_);
+  if (has_transform_world_to_baselink_init_) {
+    /* This method only gets called if we don't yet have the
+     * IMU data (the subscriber gets shut down once we compute
+     * the transform), so we can assumed that every IMU message
+     * that comes here is meant to be used for that purpose. */
+    // orientation from local_enu -> base_link (express in imu_frame first)
+    tf2::fromMsg(msg->orientation, rot_localenu_to_baselink_init_);
 
-  // Correct for the IMU's orientation w.r.t. base_link
-  tf2::Transform target_frame_trans;
-  bool can_transform = ros_filter_utilities::lookupTransformSafe(
-    tf_buffer_.get(), base_link_frame_id_, msg->header.frame_id,
-    msg->header.stamp, transform_timeout_, target_frame_trans);
+    // Correct for the IMU's orientation w.r.t. base_link
+    tf2::Transform target_frame_trans;
+    bool can_transform = ros_filter_utilities::lookupTransformSafe(
+      tf_buffer_.get(), base_link_frame_id_, msg->header.frame_id,
+      msg->header.stamp, transform_timeout_, target_frame_trans);
 
-  if (can_transform) {
-    // use full quaternion rotation and comment out the old implementation.
-    tf2::Quaternion q = target_frame_trans.getRotation();
-    rot_localenu_to_baselink_init_ = (rot_localenu_to_baselink_init_ * q.inverse()).normalize();
+    if (can_transform) {
+      // use full quaternion rotation and comment out the old implementation.
+      tf2::Quaternion q = target_frame_trans.getRotation();
+      rot_localenu_to_baselink_init_ = (rot_localenu_to_baselink_init_ * q.inverse()).normalize();
 
-    has_transform_imu_ = true;
+      has_transform_imu_ = true;
+    }
   }
 }
 
