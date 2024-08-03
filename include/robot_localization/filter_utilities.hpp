@@ -32,6 +32,12 @@
 #ifndef ROBOT_LOCALIZATION__FILTER_UTILITIES_HPP_
 #define ROBOT_LOCALIZATION__FILTER_UTILITIES_HPP_
 
+#include <angles/angles.h>
+#include <Eigen/Dense>
+#include <rclcpp/duration.hpp>
+#include <rclcpp/time.hpp>
+#include <std_msgs/msg/header.hpp>
+
 #include <iostream>
 #include <ostream>
 #include <string>
@@ -56,6 +62,16 @@ namespace robot_localization
 {
 namespace filter_utilities
 {
+
+/**
+ * @brief Utility method keeping RPY angles in the range [-pi, pi]
+ * @param[in] rotation - The rotation to bind
+ * @return the bounded value
+ */
+inline double clampRotation(double rotation)
+{
+  return angles::normalize_angle(rotation);
+}
 
 /**
  * @brief Utility method for appending tf2 prefixes cleanly

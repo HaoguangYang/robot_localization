@@ -352,7 +352,7 @@ void RosFilter<T>::controlStampedCallback(
     filter_.setControl(latest_control_, msg->header.stamp);
   } else {
     RCLCPP_WARN_STREAM_THROTTLE(
-      get_logger(), *get_clock(), 5.0, "Commanded velocities "
+      get_logger(), *get_clock(), 5000, "Commanded velocities "
       " must be given in the robot's body frame (" << base_link_frame_id_ <<
         "). Message frame was " << msg->header.frame_id);
   }
@@ -2225,7 +2225,7 @@ void RosFilter<T>::periodicUpdate()
           RCLCPP_ERROR_STREAM_SKIPFIRST_THROTTLE(
             get_logger(),
             *get_clock(),
-            5.0,
+            5000,
             "Could not obtain transform from " << odom_frame_id_ << "->" << base_link_frame_id_);
         }
       } else {
@@ -2875,7 +2875,7 @@ bool RosFilter<T>::preparePose(
 
   pose_tmp.stamp_ = tf2::timeFromSec(
     static_cast<double>(msg->header.stamp.sec) +
-    static_cast<double>(msg->header.stamp.sec) / 1000000000.0);
+    static_cast<double>(msg->header.stamp.nanosec) / 1000000000.0);
 
   // Fill out the position data
   pose_tmp.setOrigin(
